@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S3 File Upload</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <style>
+        /* Progress bar styles */
+        .progress-container {
+            margin: 20px 0;
+            display: none;
+        }
+        .progress-bar {
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        /* Flash messages */
+        .alert {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .alert-error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        .alert-success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+        .files-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        .files-table th, .files-table td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        .files-table th {
+            background-color: #f2f2f2;
+        }
+
+        .download-link {
+            color: #ffffff;
+            text-decoration: none;
+        }
+
+        .download-link:hover {
+            text-decoration: underline;
+        }
+
+        .no-files {
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AWS S3 File Upload</h1>
+        
+        <!-- Flash Messages -->
+        <div id="flash-messages">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }}">
+                            {{ message|safe }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+        </div>
+        
+        <!-- Upload Form -->
+        <div class="upload-container">
+            <h2>Upload a File</h2>
+            <form id="uploadForm">
+                <div class="file-input-container">
+                    <input type="file" name="file" id="file" class="file-input" required>
+                    <label for="file" class="file-label">Choose a file</label>
+                </div>
+                <p class="file-name" id="file-name-display">No file chosen</p>
+                <p class="allowed-types">Allowed types: PDF, JPG, PNG, TXT, DOC, XLS, CSV</p>
+                <button type="submit" class="upload-btn">Upload</button>
+            </form>
+            
+            <!-- Upload Progress -->
+            <div class="progress-container" id="progress-container">
+                <p>Uploading: <span id="upload-filename"></span></p>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <p id="progress-status">Starting upload...</p>
+            </div>
+        </div>
+        
+        <!-- Files List -->
+        <div class="files-container">
+            <h2>Uploaded Files</h2>
+            <div id="files-list">
+                {% if files %}
+                    <table class="files-table">
+                        <thead>
+                            <tr>
+                                <th>File Name</th>
+                                <th>Size (KB)</th>
+                                <th>Last Modified</th>
+                                <th>Download</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for file in files %}
+                            <tr>
+                                <td>{{ file.name }}</td>
+                                <td>{{ file.size }}</td>
+                                <td>{{ file.last_modified }}</td>
+                                <td>
+                                    <a href="{{ url_for('download_file', key=file.name) }}" 
+                                       class="download-link">
+                                       Download
+                                    </a>
+                                  </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p class="no-files">No files uploaded yet.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Display selected filename
+        document.getElementById('file').addEventListener('change', function() {
+            const fileName = this.files[0] ? this.files[0].name : 'No file chosen';
+            document.getElementById('file-name-display').textContent = fileName;
+        });
+
+        // Handle form submission
+        document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const fileInput = document.getElementById('file');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showFlashMessage('Please select a file first', 'error');
+                return;
+            }
+            
+            // Show progress UI
+            const progressContainer = document.getElementById('progress-container');
+            const progressFill = document.getElementById('progress-fill');
+            const progressStatus = document.getElementById('progress-status');
+            const uploadFilename = document.getElementById('upload-filename');
+            
+            uploadFilename.textContent = file.name;
+            progressContainer.style.display = 'block';
+            progressStatus.textContent = 'Preparing upload...';
+            
+            try {
+                // 1. Get upload URL from Flask
+                const response = await fetch('/generate-upload-url', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        filename: file.name,
+                        content_type: file.type || 'application/octet-stream'
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to get upload URL');
+                }
+                
+                const { upload_url, file_url } = await response.json();
+                progressStatus.textContent = 'Uploading...';
+                
+                // 2. Upload to S3 directly
+                const xhr = new XMLHttpRequest();
+                xhr.open('PUT', upload_url, true);
+                
+                xhr.upload.onprogress = function(e) {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        progressFill.style.width = percent + '%';
+                        progressStatus.textContent = `Uploading: ${percent}%`;
+                    }
+                };
+                
+                xhr.onload = function() {
+                    if (xhr.status === 200) {
+                        progressStatus.textContent = 'Upload complete!';
+                        showFlashMessage(`File uploaded successfully! <a href="${file_url}" target="_blank">View file</a>`, 'success');
+                        refreshFileList();
+                    } else {
+                        throw new Error('Upload failed');
+                    }
+                };
+                
+                xhr.onerror = function() {
+                    throw new Error('Upload error occurred');
+                };
+                
+                xhr.send(file);
+                
+            } catch (error) {
+                progressStatus.textContent = 'Upload failed';
+                showFlashMessage('Error: ' + error.message, 'error');
+                console.error('Upload error:', error);
+            }
+        });
+        
+        // Helper functions
+        function showFlashMessage(message, category) {
+            const flashDiv = document.createElement('div');
+            flashDiv.className = `alert alert-${category}`;
+            flashDiv.innerHTML = message;
+            document.getElementById('flash-messages').prepend(flashDiv);
+        }
+        
+        async function refreshFileList() {
+            try {
+                const response = await fetch('/');
+                const text = await response.text();
+                
+                // Parse the HTML response
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, 'text/html');
+                
+                // Update files list
+                const newFilesList = doc.getElementById('files-list').innerHTML;
+                document.getElementById('files-list').innerHTML = newFilesList;
+                
+                // Update flash messages
+                const newFlashMessages = doc.getElementById('flash-messages').innerHTML;
+                document.getElementById('flash-messages').innerHTML = newFlashMessages;
+                
+            } catch (error) {
+                console.error('Error refreshing file list:', error);
+                showFlashMessage('Error refreshing file list', 'error');
+            }
+        }
+    </script>
+</body>
+</html>
